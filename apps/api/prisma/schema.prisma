@@ -1,0 +1,149 @@
+// Prisma schema — Risk Platform
+// DB: PostgreSQL 16
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============= AUTH =============
+model User {
+  id               String    @id @default(cuid())
+  username         String    @unique
+  fullName         String
+  email            String    @default("")
+  passwordHash     String
+  isTechnical      Boolean   @default(false)
+  isActive         Boolean   @default(true)
+  mustChangePassword Boolean @default(false)
+  roleId           String
+  role             Role      @relation(fields: [roleId], references: [id])
+  lastLoginAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([username])
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String   @default("")
+  color       String   @default("zinc")
+  isSystem    Boolean  @default(false)
+  permissions Json     // map { 'incidents.view': true, ... }
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ============= INCIDENTS =============
+model Incident {
+  id              String   @id  // INC-2026-001
+  date            String   // YYYY-MM-DD
+  type            String
+  category        String
+  title           String
+  description     String   @default("")
+  source          String   @default("")
+  severity        String
+  status          String
+  responsible     String   @default("")
+  resolutionDate  String   @default("")
+  damage          Float    @default(0)
+  notes           String   @default("")
+  linkedIncidents Json     @default("[]") // string[] of incident IDs
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([type])
+  @@index([status])
+  @@index([date])
+}
+
+// ============= RISKS (упрощённый реестр) =============
+model Risk {
+  id                 String   @id  // RSK-2026-001
+  process            String
+  category           String
+  riskEvent          String
+  causes             String   @default("")
+  impact             String   @default("")
+  probability        Int      @default(0)
+  influence          Int      @default(0)
+  businessLoss       Int      @default(0)
+  businessImpact     Int      @default(0)
+  totalLoss          Float    @default(0)
+  responseStrategy   String   @default("")
+  measures           String   @default("")
+  responsible        String   @default("")
+  monitoringFrequency String  @default("")
+  status             String   @default("Не исполняется")
+  comments           String   @default("")
+  linkedIncidents    Json     @default("[]")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([status])
+  @@index([category])
+}
+
+// ============= RISK MAP (карта рисков ИТ/ИБ, ISO 27001 + NIST CSF) =============
+model RiskMap {
+  id                    String   @id  // R-CYB-001 или RM-2026-001
+  process               String
+  subProcess            String   @default("")
+  processOwner          String   @default("")
+  asset                 String   @default("")
+  assetCriticality      Int      @default(0)
+  ciaProperty           String   @default("")
+  threat                String
+  vulnerability         String   @default("")
+  description           String
+  riskType              String   @default("")
+  source                String   @default("")
+  probability           Int      @default(0)
+  impact                Int      @default(0)
+  controls              String   @default("")
+  isoControls           String   @default("")
+  nistFunction          String   @default("")
+  controlEffectiveness  String   @default("")
+  residualProbability   Int      @default(0)
+  residualImpact        Int      @default(0)
+  riskAppetite          String   @default("")
+  treatmentDecision     String   @default("")
+  treatmentPlan         String   @default("")
+  treatmentOwner        String   @default("")
+  deadline              String   @default("")
+  kri                   String   @default("")
+  identifiedAt          String   @default("")
+  lastReviewedAt        String   @default("")
+  nextReviewAt          String   @default("")
+  status                String   @default("Открыт")
+  comments              String   @default("")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([status])
+  @@index([riskType])
+  @@index([nistFunction])
+}
+
+// ============= COUNTERS (для генерации INC-2026-NNN) =============
+model Counter {
+  key       String   @id   // 'incident' | 'risk' | 'riskmap'
+  value     Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+// ============= SETTINGS (справочники) =============
+// Один документ — простая JSON-структура, как в исходном клиенте
+model Settings {
+  id        Int      @id @default(1)
+  data      Json     // { incidentTypes, incidentCategories, severities, sessionTimeoutMinutes }
+  updatedAt DateTime @updatedAt
+}

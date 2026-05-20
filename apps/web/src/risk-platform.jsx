@@ -3,9 +3,15 @@ import {
   AlertTriangle, ShieldAlert, Activity, Plus, Search, X, Edit2, Trash2,
   Link2, Database, TrendingUp, AlertCircle, Shield, LayoutGrid,
   AlertOctagon, Zap, Settings as SettingsIcon, Save, RefreshCw,
-  Users, Lock, LogOut, Eye, EyeOff, Copy, Check, KeyRound, UserPlus,
-  ShieldCheck, Cpu, Crown
+  Users, LogOut, Eye, EyeOff, Copy, Check, KeyRound, UserPlus,
+  ShieldCheck, Cpu, Crown, Map
 } from 'lucide-react';
+import {
+  RiskMapPage, RiskMapDashboardSection, SEED_RISKMAP, exportRiskMapToXlsx,
+  residualScore
+} from './riskmap.jsx';
+import { useAppData } from './useAppData.js';
+import { api } from './api.js';
 import {
   PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis,
   ResponsiveContainer, Tooltip, CartesianGrid
@@ -35,6 +41,7 @@ const BADGE_COLOR_NAMES = Object.keys(COLOR_PALETTE);
 const PERMISSION_RESOURCES = [
   { id: 'incidents', label: 'Инциденты' },
   { id: 'risks',     label: 'Риски' },
+  { id: 'riskmap',   label: 'Карта рисков ИТ/ИБ' },
   { id: 'users',     label: 'Пользователи' },
   { id: 'roles',     label: 'Роли' },
   { id: 'settings',  label: 'Справочники' }
@@ -88,39 +95,7 @@ const DEFAULT_SETTINGS = {
   sessionTimeoutMinutes: 30
 };
 
-// Default seed roles. System roles can't be deleted; their permissions are immutable too (for super admin).
-const DEFAULT_ROLES = [
-  {
-    id: 'role-super-admin', name: 'Супер-администратор', description: 'Полный доступ ко всем разделам платформы',
-    isSystem: true, permissions: allTrue(), color: 'rose'
-  },
-  {
-    id: 'role-is-officer', name: 'Специалист ИБ', description: 'Управление инцидентами и рисками, просмотр пользователей',
-    isSystem: false,
-    permissions: buildPermissionsMap([
-      'incidents.view', 'incidents.create', 'incidents.edit', 'incidents.delete',
-      'risks.view', 'risks.create', 'risks.edit', 'risks.delete',
-      'settings.view', 'settings.edit',
-      'users.view', 'roles.view'
-    ]), color: 'amber'
-  },
-  {
-    id: 'role-it-specialist', name: 'ИТ-специалист',
-    description: 'Регистрация и работа с ИТ-инцидентами, просмотр риск-регистра',
-    isSystem: false,
-    permissions: buildPermissionsMap([
-      'incidents.view', 'incidents.create', 'incidents.edit',
-      'risks.view'
-    ]), color: 'sky'
-  },
-  {
-    id: 'role-viewer', name: 'Аудитор / Наблюдатель', description: 'Только чтение всех данных',
-    isSystem: false,
-    permissions: buildPermissionsMap([
-      'incidents.view', 'risks.view', 'users.view', 'roles.view', 'settings.view'
-    ]), color: 'emerald'
-  }
-];
+// Системные роли и их права создаются на сервере при первом запуске (apps/api/src/lib/bootstrap.js).
 
 const INCIDENT_STATUS = ['Открыт', 'В работе', 'Закрыт'];
 const RISK_CATEGORIES = [
@@ -131,19 +106,8 @@ const RESPONSE_STRATEGIES = ['Принятие', 'Снижение', 'Перед
 const MONITORING_FREQ = ['Ежедневно', 'Еженедельно', 'Ежемесячно', 'Ежеквартально', 'Ежегодно'];
 const RISK_STATUS = ['Не исполняется', 'В работе', 'Исполнено'];
 
-const STORAGE_KEYS = {
-  incidents: 'platform:incidents',
-  risks: 'platform:risks',
-  counters: 'platform:counters',
-  settings: 'platform:settings',
-  users: 'platform:users',
-  roles: 'platform:roles',
-  session: 'platform:session',
-  bootstrap: 'platform:bootstrapped'
-};
-
 // ============= HELPERS =============
-const formatDate = (iso) => {
+export const formatDate = (iso) => {
   if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -154,7 +118,7 @@ const formatDateTime = (iso) => {
   return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 };
 const formatMoney = (n) => !n ? '0' : new Intl.NumberFormat('ru-RU').format(n);
-const todayISO = () => new Date().toISOString().split('T')[0];
+export const todayISO = () => new Date().toISOString().split('T')[0];
 const newId = () => Math.random().toString(36).slice(2, 11);
 
 const severityColor = (name, severities) => {
@@ -185,206 +149,27 @@ const riskStatusColor = (st) => ({
   'Не исполняется': { bg: 'bg-rose-500/10',    text: 'text-rose-400',    border: 'border-rose-500/30' }
 }[st] || { bg: 'bg-zinc-500/10', text: 'text-zinc-400', border: 'border-zinc-500/30' });
 
-const riskZone = (score) => {
+export const riskZone = (score) => {
   if (score >= 15) return { name: 'Критический', class: 'bg-rose-600',    textClass: 'text-rose-200',    border: 'border-rose-500' };
   if (score >= 10) return { name: 'Высокий',     class: 'bg-orange-600',  textClass: 'text-orange-200',  border: 'border-orange-500' };
   if (score >= 5)  return { name: 'Средний',     class: 'bg-amber-600',   textClass: 'text-amber-200',   border: 'border-amber-500' };
   return            { name: 'Низкий',            class: 'bg-emerald-700', textClass: 'text-emerald-200', border: 'border-emerald-600' };
 };
 
-// ============= CRYPTO (SHA-256 + salt) =============
-const generateSalt = () => {
-  const arr = new Uint8Array(16);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('');
-};
-const hashPassword = async (password, salt) => {
-  const data = new TextEncoder().encode(`${salt}:${password}`);
-  const buf = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
-};
-// Generate a memorable but strong-ish temporary password.
-const generateTempPassword = () => {
-  const adjectives = ['Quick', 'Bright', 'Sharp', 'Strong', 'Clear', 'Solid', 'Brave', 'Calm'];
-  const nouns = ['Lion', 'Falcon', 'River', 'Mountain', 'Storm', 'Forest', 'Star', 'Tiger'];
-  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-  const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  const num = Math.floor(100 + Math.random() * 900);
-  const sym = '!@#$%&*'[Math.floor(Math.random() * 7)];
-  return `${adj}${noun}${num}${sym}`;
-};
-
-// ============= BOOTSTRAP =============
-// Creates initial users & roles on first run with FIXED default passwords.
-// Both must be changed on first login.
-const DEFAULT_TECH_PASSWORD = 'tech123!';
-const DEFAULT_ADMIN_PASSWORD = 'admin123!';
-
-const generateBootstrapAccounts = async () => {
-  const techSalt = generateSalt();
-  const adminSalt = generateSalt();
-  const techHash = await hashPassword(DEFAULT_TECH_PASSWORD, techSalt);
-  const adminHash = await hashPassword(DEFAULT_ADMIN_PASSWORD, adminSalt);
-
-  const users = [
-    {
-      id: 'user-tech-default',
-      username: 'tech',
-      fullName: 'Техническая учётная запись',
-      email: '',
-      passwordHash: techHash,
-      passwordSalt: techSalt,
-      roleId: 'role-super-admin', // tech accounts effectively have super-admin permissions
-      isTechnical: true, // hidden from normal user list
-      isActive: true,
-      mustChangePassword: true, // forced change on first login
-      createdAt: new Date().toISOString(),
-      lastLoginAt: null
-    },
-    {
-      id: 'user-super-admin',
-      username: 'admin',
-      fullName: 'Супер-администратор',
-      email: '',
-      passwordHash: adminHash,
-      passwordSalt: adminSalt,
-      roleId: 'role-super-admin',
-      isTechnical: false,
-      isActive: true,
-      mustChangePassword: true, // forced change on first login
-      createdAt: new Date().toISOString(),
-      lastLoginAt: null
-    }
-  ];
-
-  return { users, roles: DEFAULT_ROLES, credentials: { tech: DEFAULT_TECH_PASSWORD, admin: DEFAULT_ADMIN_PASSWORD } };
-};
-
-// ============= STORAGE HOOK =============
-const useStorage = () => {
-  const [incidents, setIncidents] = useState([]);
-  const [risks, setRisks] = useState([]);
-  const [counters, setCounters] = useState({ incident: 0, risk: 0 });
-  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
-  const [users, setUsers] = useState([]);
-  const [roles, setRoles] = useState(DEFAULT_ROLES);
-  const [session, setSession] = useState(null);
-  const [loaded, setLoaded] = useState(false);
-  const [hasStorage, setHasStorage] = useState(true);
-  const [bootstrapCreds, setBootstrapCreds] = useState(null);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const memBackup = { _data: {} };
-        let store = window.storage;
-        if (!store) {
-          setHasStorage(false);
-          // Drop in mem fallback so the rest of the code uniformly uses .get/.set/.delete
-          store = {
-            get: async (k) => memBackup._data[k] !== undefined ? { value: memBackup._data[k] } : null,
-            set: async (k, v) => { memBackup._data[k] = v; },
-            delete: async (k) => { delete memBackup._data[k]; }
-          };
-          window.__memStore = store;
-        }
-
-        const tryGet = async (key, fallback) => {
-          try { const r = await store.get(key); return r ? JSON.parse(r.value) : fallback; }
-          catch { return fallback; }
-        };
-
-        const inc = await tryGet(STORAGE_KEYS.incidents, []);
-        const rsk = await tryGet(STORAGE_KEYS.risks, []);
-        const cnt = await tryGet(STORAGE_KEYS.counters, { incident: 0, risk: 0 });
-        const set = await tryGet(STORAGE_KEYS.settings, DEFAULT_SETTINGS);
-        let usr = await tryGet(STORAGE_KEYS.users, null);
-        let rls = await tryGet(STORAGE_KEYS.roles, null);
-        const ses = await tryGet(STORAGE_KEYS.session, null);
-        const booted = await tryGet(STORAGE_KEYS.bootstrap, false);
-
-        // First run: bootstrap users & roles
-        if (!booted || !usr || !rls) {
-          const { users: bUsers, roles: bRoles, credentials } = await generateBootstrapAccounts();
-          usr = bUsers; rls = bRoles;
-          await store.set(STORAGE_KEYS.users, JSON.stringify(bUsers));
-          await store.set(STORAGE_KEYS.roles, JSON.stringify(bRoles));
-          await store.set(STORAGE_KEYS.bootstrap, JSON.stringify(true));
-          setBootstrapCreds(credentials);
-        }
-
-        setIncidents(inc);
-        setRisks(rsk);
-        setCounters(cnt);
-        // Backfill new fields (e.g. sessionTimeoutMinutes) into existing settings
-        setSettings({ ...DEFAULT_SETTINGS, ...set });
-        setUsers(usr);
-        setRoles(rls);
-        setSession(ses);
-      } catch (e) {
-        console.error('Storage load error:', e);
-        setHasStorage(false);
-      } finally {
-        setLoaded(true);
-      }
-    };
-    load();
-  }, []);
-
-  const save = async (key, value) => {
-    try {
-      if (window.storage) await window.storage.set(key, JSON.stringify(value));
-      else if (window.__memStore) await window.__memStore.set(key, JSON.stringify(value));
-    }
-    catch (e) { console.error('Storage save error:', e); }
-  };
-  const remove = async (key) => {
-    try {
-      if (window.storage) await window.storage.delete(key);
-      else if (window.__memStore) await window.__memStore.delete(key);
-    } catch (e) { console.error('Storage delete error:', e); }
-  };
-
-  const persistIncidents = async (next) => { setIncidents(next); await save(STORAGE_KEYS.incidents, next); };
-  const persistRisks     = async (next) => { setRisks(next);     await save(STORAGE_KEYS.risks, next); };
-  const persistCounters  = async (next) => { setCounters(next);  await save(STORAGE_KEYS.counters, next); };
-  const persistSettings  = async (next) => { setSettings(next);  await save(STORAGE_KEYS.settings, next); };
-  const persistUsers     = async (next) => { setUsers(next);     await save(STORAGE_KEYS.users, next); };
-  const persistRoles     = async (next) => { setRoles(next);     await save(STORAGE_KEYS.roles, next); };
-  const persistSession   = async (next) => {
-    setSession(next);
-    if (next) await save(STORAGE_KEYS.session, next);
-    else await remove(STORAGE_KEYS.session);
-  };
-
-  const nextIncidentId = () => {
-    const n = (counters.incident || 0) + 1;
-    return { id: `INC-${new Date().getFullYear()}-${String(n).padStart(3, '0')}`, n };
-  };
-  const nextRiskId = () => {
-    const n = (counters.risk || 0) + 1;
-    return { id: `RSK-${new Date().getFullYear()}-${String(n).padStart(3, '0')}`, n };
-  };
-
-  return {
-    incidents, risks, counters, settings, users, roles, session,
-    loaded, hasStorage, bootstrapCreds, clearBootstrapCreds: () => setBootstrapCreds(null),
-    persistIncidents, persistRisks, persistCounters, persistSettings,
-    persistUsers, persistRoles, persistSession,
-    nextIncidentId, nextRiskId
-  };
-};
+// ============= ДАННЫЕ / АВТОРИЗАЦИЯ =============
+// Bootstrap пользователей/ролей, хэширование паролей и хранилище перенесены на сервер.
+// Фронт работает через REST API — см. ./api.js и ./useAppData.js.
 
 // ============= AUTH CONTEXT =============
 const AuthContext = createContext(null);
-const useAuth = () => useContext(AuthContext);
+export const useAuth = () => useContext(AuthContext);
 
 // ============= SETTINGS CONTEXT =============
 const SettingsContext = createContext(DEFAULT_SETTINGS);
-const useSettings = () => useContext(SettingsContext);
+export const useSettings = () => useContext(SettingsContext);
 
 // ============= UI PRIMITIVES =============
-const Badge = ({ children, color = 'zinc', className = '' }) => {
+export const Badge = ({ children, color = 'zinc', className = '' }) => {
   const palette = COLOR_PALETTE[color] || COLOR_PALETTE.zinc;
   return (
     <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[11px] font-medium border rounded ${palette.bg} ${palette.text} ${palette.border} ${className}`}>
@@ -393,7 +178,7 @@ const Badge = ({ children, color = 'zinc', className = '' }) => {
   );
 };
 
-const Button = ({ children, onClick, variant = 'primary', size = 'md', className = '', type = 'button', disabled = false, title }) => {
+export const Button = ({ children, onClick, variant = 'primary', size = 'md', className = '', type = 'button', disabled = false, title }) => {
   const variants = {
     primary:   'bg-amber-400 text-zinc-950 hover:bg-amber-300 disabled:bg-zinc-700 disabled:text-zinc-500',
     secondary: 'bg-zinc-800 text-zinc-100 hover:bg-zinc-700 border border-zinc-700',
@@ -410,11 +195,11 @@ const Button = ({ children, onClick, variant = 'primary', size = 'md', className
   );
 };
 
-const Card = ({ children, className = '' }) => (
+export const Card = ({ children, className = '' }) => (
   <div className={`bg-zinc-900/60 border border-zinc-800 rounded ${className}`}>{children}</div>
 );
 
-const Input = ({ label, value, onChange, type = 'text', placeholder, required = false, className = '', autoComplete, onKeyDown }) => (
+export const Input = ({ label, value, onChange, type = 'text', placeholder, required = false, className = '', autoComplete, onKeyDown }) => (
   <div className={className}>
     {label && (
       <label className="block text-[11px] uppercase tracking-wider text-zinc-500 mb-1.5 font-medium">
@@ -428,7 +213,7 @@ const Input = ({ label, value, onChange, type = 'text', placeholder, required = 
   </div>
 );
 
-const TextArea = ({ label, value, onChange, placeholder, rows = 3, required = false, className = '' }) => (
+export const TextArea = ({ label, value, onChange, placeholder, rows = 3, required = false, className = '' }) => (
   <div className={className}>
     {label && (
       <label className="block text-[11px] uppercase tracking-wider text-zinc-500 mb-1.5 font-medium">
@@ -441,7 +226,7 @@ const TextArea = ({ label, value, onChange, placeholder, rows = 3, required = fa
   </div>
 );
 
-const Select = ({ label, value, onChange, options, required = false, className = '', placeholder = 'Выберите...' }) => (
+export const Select = ({ label, value, onChange, options, required = false, className = '', placeholder = 'Выберите...' }) => (
   <div className={className}>
     {label && (
       <label className="block text-[11px] uppercase tracking-wider text-zinc-500 mb-1.5 font-medium">
@@ -460,7 +245,7 @@ const Select = ({ label, value, onChange, options, required = false, className =
   </div>
 );
 
-const Modal = ({ open, onClose, title, children, size = 'lg' }) => {
+export const Modal = ({ open, onClose, title, children, size = 'lg' }) => {
   if (!open) return null;
   const sizes = { md: 'max-w-2xl', lg: 'max-w-4xl', xl: 'max-w-6xl' };
   return (
@@ -701,12 +486,13 @@ const TopBar = ({ tab, setTab }) => {
   const can = auth.can;
 
   const allTabs = [
-    { id: 'dashboard', label: 'Дашборд',      icon: LayoutGrid,    require: null },
-    { id: 'incidents', label: 'Инциденты',    icon: AlertTriangle, require: 'incidents.view' },
-    { id: 'risks',     label: 'Риск-регистр', icon: ShieldAlert,   require: 'risks.view' },
-    { id: 'users',     label: 'Пользователи', icon: Users,         require: 'users.view' },
-    { id: 'roles',     label: 'Роли',         icon: ShieldCheck,   require: 'roles.view' },
-    { id: 'settings',  label: 'Справочники',  icon: SettingsIcon,  require: 'settings.view' }
+    { id: 'dashboard', label: 'Дашборд',           icon: LayoutGrid,    require: null },
+    { id: 'incidents', label: 'Инциденты',         icon: AlertTriangle, require: 'incidents.view' },
+    { id: 'risks',     label: 'Риск-регистр',      icon: ShieldAlert,   require: 'risks.view' },
+    { id: 'riskmap',   label: 'Карта рисков ИТ/ИБ', icon: Map,          require: 'riskmap.view' },
+    { id: 'users',     label: 'Пользователи',      icon: Users,         require: 'users.view' },
+    { id: 'roles',     label: 'Роли',              icon: ShieldCheck,   require: 'roles.view' },
+    { id: 'settings',  label: 'Справочники',       icon: SettingsIcon,  require: 'settings.view' }
   ];
   const tabs = allTabs.filter((t) => !t.require || can(t.require));
   const role = auth.currentRole;
@@ -832,7 +618,7 @@ const RiskMatrix = ({ risks, onCellClick }) => {
   );
 };
 
-const Dashboard = ({ incidents, risks, hasStorage, loadDemo, clearAll, onCellClick }) => {
+const Dashboard = ({ incidents, risks, riskmap, hasStorage, loadDemo, clearAll, onCellClick, onRiskmapCellClick }) => {
   const settings = useSettings();
   const auth = useAuth();
   const canSeeIncidents = auth.can('incidents.view');
@@ -1030,6 +816,8 @@ const Dashboard = ({ incidents, risks, hasStorage, loadDemo, clearAll, onCellCli
           )}
         </>
       )}
+
+      <RiskMapDashboardSection records={riskmap || []} onCellClick={onRiskmapCellClick} />
     </div>
   );
 };
@@ -1047,13 +835,31 @@ const emptyIncident = (settings) => ({
   responsible: '',
   resolutionDate: '',
   damage: 0,
-  notes: ''
+  notes: '',
+  linkedIncidents: []
 });
 
-const IncidentForm = ({ initial, onSave, onCancel }) => {
+const IncidentForm = ({ initial, onSave, onCancel, allIncidents = [] }) => {
   const settings = useSettings();
   const [data, setData] = useState(initial || emptyIncident(settings));
   const update = (field, value) => setData((d) => ({ ...d, [field]: value }));
+
+  const toggleLinkedIncident = (id) => {
+    const cur = data.linkedIncidents || [];
+    update('linkedIncidents', cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]);
+  };
+  // Список доступных инцидентов: все, кроме редактируемого
+  const linkableIncidents = allIncidents.filter((i) => i.id !== initial?.id);
+  const [linkedSearch, setLinkedSearch] = useState('');
+  const filteredLinkable = useMemo(() => {
+    if (!linkedSearch) return linkableIncidents;
+    const q = linkedSearch.toLowerCase();
+    return linkableIncidents.filter((i) =>
+      i.id.toLowerCase().includes(q) ||
+      (i.title || '').toLowerCase().includes(q) ||
+      (i.type || '').toLowerCase().includes(q)
+    );
+  }, [linkableIncidents, linkedSearch]);
 
   const handleSave = () => {
     if (!data.title || !data.category || !data.type) {
@@ -1083,6 +889,43 @@ const IncidentForm = ({ initial, onSave, onCancel }) => {
       </div>
       <Input label="Ущерб (TJS)" type="number" value={data.damage} onChange={(v) => update('damage', v)} placeholder="0" />
       <TextArea label="Комментарии" value={data.notes} onChange={(v) => update('notes', v)} placeholder="Доп. информация, действия" rows={3} />
+
+      <div>
+        <label className="block text-[11px] uppercase tracking-wider text-zinc-500 mb-1.5 font-medium">
+          Связанные инциденты <span className="text-zinc-600 normal-case tracking-normal">({(data.linkedIncidents || []).length} выбрано)</span>
+        </label>
+        {linkableIncidents.length === 0 ? (
+          <div className="p-4 bg-zinc-950 border border-zinc-800 rounded text-zinc-500 text-sm text-center">
+            Нет других инцидентов для связывания
+          </div>
+        ) : (
+          <>
+            <div className="relative mb-2">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+              <input value={linkedSearch} onChange={(e) => setLinkedSearch(e.target.value)}
+                placeholder="Поиск среди инцидентов..."
+                className="w-full bg-zinc-950 border border-zinc-800 text-zinc-100 pl-8 pr-3 py-1.5 text-xs rounded outline-none focus:border-amber-400/60" />
+            </div>
+            <div className="max-h-48 overflow-y-auto bg-zinc-950 border border-zinc-800 rounded divide-y divide-zinc-800">
+              {filteredLinkable.length === 0 ? (
+                <div className="p-3 text-zinc-500 text-xs text-center">Ничего не найдено</div>
+              ) : filteredLinkable.map((i) => {
+                const checked = (data.linkedIncidents || []).includes(i.id);
+                return (
+                  <label key={i.id} className="flex items-center gap-3 px-3 py-2 hover:bg-zinc-800/50 cursor-pointer">
+                    <input type="checkbox" checked={checked} onChange={() => toggleLinkedIncident(i.id)} className="accent-amber-400" />
+                    <span className="font-mono text-xs text-amber-400">{i.id}</span>
+                    <Badge color={typeColor(i.type, settings.incidentTypes)}>{i.type}</Badge>
+                    <span className="text-sm text-zinc-300 flex-1 truncate">{i.title}</span>
+                    <span className="text-[11px] text-zinc-500 whitespace-nowrap">{formatDate(i.date)}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
       <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
         <Button variant="ghost" onClick={onCancel}>Отмена</Button>
         <Button variant="primary" onClick={handleSave}>{initial ? 'Сохранить' : 'Создать'}</Button>
@@ -1098,7 +941,7 @@ const InfoRow = ({ label, children }) => (
   </div>
 );
 
-const IncidentView = ({ incident, linkedRisks, onClose, onEdit, onDelete, canEdit, canDelete }) => {
+const IncidentView = ({ incident, linkedRisks, linkedIncidents = [], onClose, onEdit, onDelete, onOpenIncident, canEdit, canDelete }) => {
   const settings = useSettings();
   const sev = severityColor(incident.severity, settings.severities);
   const st = incidentStatusColor(incident.status);
@@ -1160,6 +1003,37 @@ const IncidentView = ({ incident, linkedRisks, onClose, onEdit, onDelete, canEdi
         </div>
       )}
 
+      {linkedIncidents.length > 0 && (
+        <div>
+          <div className="text-[11px] uppercase tracking-wider text-zinc-500 font-medium mb-2 flex items-center gap-1.5">
+            <Link2 size={11} /> Связанные инциденты ({linkedIncidents.length})
+          </div>
+          <div className="space-y-1.5">
+            {linkedIncidents.map(({ incident: li, direction }) => {
+              const liSev = severityColor(li.severity, settings.severities);
+              const liSt = incidentStatusColor(li.status);
+              return (
+                <button key={li.id} type="button"
+                  onClick={() => onOpenIncident && onOpenIncident(li)}
+                  className="w-full flex items-center gap-3 p-2.5 bg-zinc-950/60 border border-zinc-800 rounded hover:border-zinc-700 hover:bg-zinc-900 transition-colors text-left">
+                  <span className="font-mono text-xs text-amber-400 whitespace-nowrap">{li.id}</span>
+                  <Badge color={typeColor(li.type, settings.incidentTypes)}>{li.type}</Badge>
+                  <span className="flex-1 text-sm text-zinc-200 truncate">{li.title}</span>
+                  <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-medium border rounded ${liSev.bg} ${liSev.text} ${liSev.border}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${liSev.dot}`} />
+                    {li.severity}
+                  </span>
+                  <span className={`inline-flex px-2 py-0.5 text-[10px] font-medium border rounded ${liSt.bg} ${liSt.text} ${liSt.border}`}>{li.status}</span>
+                  <span className="text-[10px] text-zinc-600 font-mono whitespace-nowrap" title={direction === 'in' ? 'Связь установлена из другого инцидента' : 'Связь установлена из текущего инцидента'}>
+                    {direction === 'in' ? '← in' : 'out →'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-800">
         {canDelete && <Button variant="danger" onClick={onDelete}><Trash2 size={13} /> Удалить</Button>}
         {canEdit && <Button variant="secondary" onClick={onEdit}><Edit2 size={13} /> Редактировать</Button>}
@@ -1198,6 +1072,24 @@ const IncidentsPage = ({ incidents, risks, onCreate, onUpdate, onDelete }) => {
   }, [incidents, search, filterType, filterStatus, filterSeverity]);
 
   const linkedRisksFor = (id) => risks.filter((r) => (r.linkedIncidents || []).includes(id));
+
+  // Двунаправленные связи между инцидентами.
+  // Дедуплицируем: входящие записи не вытесняют исходящие (исходящие имеют приоритет direction='out').
+  const linkedIncidentsFor = (incident) => {
+    if (!incident) return [];
+    const result = new Map();
+    (incident.linkedIncidents || []).forEach((linkedId) => {
+      const li = incidents.find((x) => x.id === linkedId);
+      if (li) result.set(li.id, { incident: li, direction: 'out' });
+    });
+    incidents.forEach((other) => {
+      if (other.id === incident.id) return;
+      if ((other.linkedIncidents || []).includes(incident.id) && !result.has(other.id)) {
+        result.set(other.id, { incident: other, direction: 'in' });
+      }
+    });
+    return Array.from(result.values());
+  };
 
   return (
     <div className="space-y-4">
@@ -1261,7 +1153,8 @@ const IncidentsPage = ({ incidents, risks, onCreate, onUpdate, onDelete }) => {
                 {filtered.map((i) => {
                   const sev = severityColor(i.severity, settings.severities);
                   const st = incidentStatusColor(i.status);
-                  const links = linkedRisksFor(i.id);
+                  const riskLinks = linkedRisksFor(i.id);
+                  const incidentLinks = linkedIncidentsFor(i);
                   return (
                     <tr key={i.id} className="border-b border-zinc-800/60 hover:bg-zinc-800/30 transition-colors cursor-pointer" onClick={() => setViewing(i)}>
                       <td className="px-4 py-3 font-mono text-xs text-amber-400">{i.id}</td>
@@ -1279,7 +1172,19 @@ const IncidentsPage = ({ incidents, risks, onCreate, onUpdate, onDelete }) => {
                         <span className={`inline-flex px-2 py-0.5 text-[11px] font-medium border rounded ${st.bg} ${st.text} ${st.border}`}>{i.status}</span>
                       </td>
                       <td className="px-4 py-3 text-xs text-zinc-500">
-                        {links.length > 0 ? <span className="inline-flex items-center gap-1 text-amber-400"><Link2 size={11} /> {links.length}</span> : '—'}
+                        <div className="flex items-center gap-2">
+                          {riskLinks.length > 0 && (
+                            <span className="inline-flex items-center gap-1 text-amber-400" title={`${riskLinks.length} связанных риск(ов)`}>
+                              <ShieldAlert size={11} /> {riskLinks.length}
+                            </span>
+                          )}
+                          {incidentLinks.length > 0 && (
+                            <span className="inline-flex items-center gap-1 text-sky-400" title={`${incidentLinks.length} связанных инцидент(ов)`}>
+                              <Link2 size={11} /> {incidentLinks.length}
+                            </span>
+                          )}
+                          {riskLinks.length === 0 && incidentLinks.length === 0 && '—'}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
@@ -1297,14 +1202,21 @@ const IncidentsPage = ({ incidents, risks, onCreate, onUpdate, onDelete }) => {
       </Card>
 
       <Modal open={creating} onClose={() => setCreating(false)} title="Новый инцидент">
-        <IncidentForm onSave={(data) => { onCreate(data); setCreating(false); }} onCancel={() => setCreating(false)} />
+        <IncidentForm allIncidents={incidents}
+          onSave={(data) => { onCreate(data); setCreating(false); }}
+          onCancel={() => setCreating(false)} />
       </Modal>
       <Modal open={!!editing} onClose={() => setEditing(null)} title={`Редактирование ${editing?.id || ''}`}>
-        {editing && <IncidentForm initial={editing} onSave={(data) => { onUpdate(editing.id, data); setEditing(null); }} onCancel={() => setEditing(null)} />}
+        {editing && <IncidentForm initial={editing} allIncidents={incidents}
+          onSave={(data) => { onUpdate(editing.id, data); setEditing(null); }}
+          onCancel={() => setEditing(null)} />}
       </Modal>
       <Modal open={!!viewing} onClose={() => setViewing(null)} title={`Инцидент ${viewing?.id || ''}`}>
         {viewing && (
-          <IncidentView incident={viewing} linkedRisks={linkedRisksFor(viewing.id)}
+          <IncidentView incident={viewing}
+            linkedRisks={linkedRisksFor(viewing.id)}
+            linkedIncidents={linkedIncidentsFor(viewing)}
+            onOpenIncident={(li) => setViewing(li)}
             canEdit={canEdit} canDelete={canDelete}
             onClose={() => setViewing(null)}
             onEdit={() => { setEditing(viewing); setViewing(null); }}
@@ -1323,7 +1235,7 @@ const emptyRisk = () => ({
   monitoringFrequency: 'Ежемесячно', status: 'Не исполняется', comments: '', linkedIncidents: []
 });
 
-const ScaleSelect = ({ label, value, onChange, max = 5, required = false }) => (
+export const ScaleSelect = ({ label, value, onChange, max = 5, required = false }) => (
   <div>
     <label className="block text-[11px] uppercase tracking-wider text-zinc-500 mb-1.5 font-medium">
       {label}{required && <span className="text-amber-400 ml-1">*</span>}
@@ -2382,123 +2294,27 @@ const SettingsPage = ({ settings, incidents, onSave }) => {
   );
 };
 
-// ============= DEMO DATA =============
-const generateDemoData = () => {
-  const Y = new Date().getFullYear();
-  const incidents = [
-    { id: `INC-${Y}-001`, createdAt: new Date(Date.now()-12*864e5).toISOString(), date: new Date(Date.now()-12*864e5).toISOString().split('T')[0],
-      type: 'ИБ', category: 'Фишинг', title: 'Фишинговая рассылка от имени HR-отдела',
-      description: 'Получено уведомление от 4 сотрудников о подозрительных письмах с просьбой ввести учётные данные на поддельной странице.',
-      source: 'Обращение сотрудников', severity: 'Высокая', status: 'Закрыт',
-      responsible: 'Искандар Х.', resolutionDate: new Date(Date.now()-10*864e5).toISOString().split('T')[0],
-      damage: 0, notes: 'Учётные данные не были скомпрометированы. Проведён внеплановый инструктаж.' },
-    { id: `INC-${Y}-002`, createdAt: new Date(Date.now()-8*864e5).toISOString(), date: new Date(Date.now()-8*864e5).toISOString().split('T')[0],
-      type: 'ИТ', category: 'Сбой сети', title: 'Кратковременная недоступность ДБО',
-      description: 'Сбой основного сетевого канала, переключение на резервный заняло 14 минут.',
-      source: 'Мониторинг', severity: 'Средняя', status: 'Закрыт',
-      responsible: 'Сетевой отдел', resolutionDate: new Date(Date.now()-8*864e5).toISOString().split('T')[0],
-      damage: 0, notes: 'Инициирована проверка SLA с провайдером.' },
-    { id: `INC-${Y}-003`, createdAt: new Date(Date.now()-5*864e5).toISOString(), date: new Date(Date.now()-5*864e5).toISOString().split('T')[0],
-      type: 'ИБ', category: 'Несанкционированный доступ', title: 'Множественные неудачные попытки входа',
-      description: 'Зафиксированы попытки brute-force на учётную запись администратора со внешних IP.',
-      source: 'SIEM', severity: 'Высокая', status: 'В работе',
-      responsible: 'Искандар Х.', resolutionDate: null,
-      damage: 0, notes: 'IP заблокированы на WAF. Учётная запись временно отключена.' },
-    { id: `INC-${Y}-004`, createdAt: new Date(Date.now()-3*864e5).toISOString(), date: new Date(Date.now()-3*864e5).toISOString().split('T')[0],
-      type: 'ИТ', category: 'Сбой ПО', title: 'Ошибка обновления АБС в одном из филиалов',
-      description: 'После накатывания патча в филиале г. Бохтар АБС не запускалась 1 час 20 минут.',
-      source: 'Обращение филиала', severity: 'Средняя', status: 'Закрыт',
-      responsible: 'Группа сопровождения АБС', resolutionDate: new Date(Date.now()-3*864e5).toISOString().split('T')[0],
-      damage: 4500, notes: 'Откачен патч, доработан скрипт обновления.' },
-    { id: `INC-${Y}-005`, createdAt: new Date(Date.now()-1*864e5).toISOString(), date: new Date(Date.now()-1*864e5).toISOString().split('T')[0],
-      type: 'ИБ', category: 'Вредоносное ПО', title: 'Срабатывание EDR на рабочей станции',
-      description: 'Kaspersky EDR заблокировал запуск подозрительного исполняемого файла.',
-      source: 'Kaspersky Endpoint Security', severity: 'Критическая', status: 'Открыт',
-      responsible: 'Искандар Х.', resolutionDate: null,
-      damage: 0, notes: 'Хост изолирован, проводится анализ.' }
-  ];
-  const risks = [
-    { id: `RSK-${Y}-001`, createdAt: new Date(Date.now()-30*864e5).toISOString(),
-      process: 'Дистанционное банковское обслуживание', category: 'ИБ — Конфиденциальность',
-      riskEvent: 'Компрометация учётных данных клиента вследствие фишинга',
-      causes: 'Низкий уровень осведомлённости клиентов; отсутствие двухфакторной аутентификации у части клиентов',
-      impact: 'Несанкционированные операции по счетам, репутационный ущерб, регуляторные санкции',
-      probability: 4, influence: 4, businessLoss: 4, businessImpact: 4, totalLoss: 250000,
-      responseStrategy: 'Снижение',
-      measures: 'Внедрение обязательной 2FA, регулярные кампании по информированию клиентов, мониторинг аномалий в SIEM',
-      responsible: 'Искандар Х. (ИБ)', monitoringFrequency: 'Ежемесячно', status: 'В работе',
-      comments: '2FA внедрено по корпоративным каналам.',
-      linkedIncidents: [`INC-${Y}-001`, `INC-${Y}-003`] },
-    { id: `RSK-${Y}-002`, createdAt: new Date(Date.now()-25*864e5).toISOString(),
-      process: 'Эксплуатация ИТ-инфраструктуры', category: 'ИТ — Сеть',
-      riskEvent: 'Длительная недоступность сетевой инфраструктуры',
-      causes: 'Единственный канал связи у провайдера, отсутствие резервирования',
-      impact: 'Простой операционной деятельности, нарушение SLA',
-      probability: 3, influence: 4, businessLoss: 3, businessImpact: 3, totalLoss: 80000,
-      responseStrategy: 'Снижение',
-      measures: 'Подключение резервных каналов связи во все филиалы',
-      responsible: 'Сетевой отдел', monitoringFrequency: 'Ежеквартально', status: 'В работе',
-      comments: 'Резерв в 60% филиалов.', linkedIncidents: [`INC-${Y}-002`] },
-    { id: `RSK-${Y}-003`, createdAt: new Date(Date.now()-20*864e5).toISOString(),
-      process: 'Управление обновлениями ПО', category: 'ИТ — Приложения',
-      riskEvent: 'Сбой банковских систем после установки обновлений',
-      causes: 'Недостаточное тестирование на pre-prod',
-      impact: 'Простой операционных систем',
-      probability: 3, influence: 3, businessLoss: 2, businessImpact: 3, totalLoss: 30000,
-      responseStrategy: 'Снижение',
-      measures: 'Внедрение pre-prod среды, регламент отката',
-      responsible: 'Группа сопровождения АБС', monitoringFrequency: 'Ежемесячно', status: 'В работе',
-      comments: 'Регламент в финальной редакции.', linkedIncidents: [`INC-${Y}-004`] },
-    { id: `RSK-${Y}-004`, createdAt: new Date(Date.now()-15*864e5).toISOString(),
-      process: 'Защита конечных устройств', category: 'ИБ — Целостность',
-      riskEvent: 'Заражение рабочих станций вредоносным ПО',
-      causes: 'Открытие сотрудниками вложений из непроверенных источников',
-      impact: 'Потеря данных, эскалация атаки',
-      probability: 4, influence: 5, businessLoss: 4, businessImpact: 5, totalLoss: 500000,
-      responseStrategy: 'Снижение',
-      measures: 'EDR на всех рабочих станциях, обучение сотрудников',
-      responsible: 'Искандар Х. (ИБ)', monitoringFrequency: 'Ежедневно', status: 'В работе',
-      comments: 'EDR покрытие 95%.', linkedIncidents: [`INC-${Y}-005`] },
-    { id: `RSK-${Y}-005`, createdAt: new Date(Date.now()-10*864e5).toISOString(),
-      process: 'Управление доступом', category: 'ИБ — Соответствие требованиям',
-      riskEvent: 'Несоответствие требованиям НБТ по управлению доступом',
-      causes: 'Отсутствие регулярного пересмотра прав',
-      impact: 'Регуляторные предписания, штрафы',
-      probability: 2, influence: 3, businessLoss: 2, businessImpact: 2, totalLoss: 20000,
-      responseStrategy: 'Снижение',
-      measures: 'Регулярный пересмотр прав, IAM-решение',
-      responsible: 'Искандар Х. (ИБ)', monitoringFrequency: 'Ежеквартально', status: 'Не исполняется',
-      comments: 'Закупка IAM в плане.', linkedIncidents: [] }
-  ];
-  return { incidents, risks, counters: { incident: incidents.length, risk: risks.length } };
-};
 
 // ============= ROOT APP =============
 export default function App() {
-  const storage = useStorage();
+  const data = useAppData();
   const [tab, setTab] = useState('dashboard');
   const [matrixModal, setMatrixModal] = useState(null);
   const idleTimerRef = useRef(null);
 
   // ===== AUTH =====
-  const currentUser = useMemo(() => {
-    if (!storage.session?.userId) return null;
-    return storage.users.find((u) => u.id === storage.session.userId) || null;
-  }, [storage.session, storage.users]);
-
+  const currentUser = data.currentUser;
   const currentRole = useMemo(() => {
     if (!currentUser) return null;
-    // Technical accounts effectively have all permissions regardless of stored role.
-    if (currentUser.isTechnical) return { ...DEFAULT_ROLES[0], name: 'Техническая УЗ', color: 'violet', permissions: allTrue() };
-    return storage.roles.find((r) => r.id === currentUser.roleId) || null;
-  }, [currentUser, storage.roles]);
+    if (currentUser.isTechnical) return { id: 'role-technical', name: 'Техническая УЗ', color: 'violet', permissions: allTrue(), isSystem: true };
+    return data.currentRole || data.roles.find((r) => r.id === currentUser.roleId) || null;
+  }, [currentUser, data.currentRole, data.roles]);
 
   const can = useCallback((perm) => {
     if (!currentUser) return false;
     if (currentUser.isTechnical) return true;
     if (!currentRole) return false;
     if (!currentRole.permissions[perm]) {
-      // Auto-grant `view` if any other action on the same resource is allowed
       if (perm.endsWith('.view')) {
         const res = perm.split('.')[0];
         return PERMISSION_ACTIONS.some((a) => a.id !== 'view' && currentRole.permissions[`${res}.${a.id}`]);
@@ -2508,19 +2324,19 @@ export default function App() {
     return true;
   }, [currentUser, currentRole]);
 
-  // ===== Idle timer =====
+  // ===== Idle timer (logout по неактивности) =====
   const resetIdleTimer = useCallback(() => {
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-    if (!storage.session) return;
-    const minutes = storage.settings.sessionTimeoutMinutes || 30;
+    if (!currentUser) return;
+    const minutes = data.settings.sessionTimeoutMinutes || 30;
     idleTimerRef.current = setTimeout(() => {
-      storage.persistSession(null);
+      data.logout();
       alert(`Сессия завершена из-за бездействия (${minutes} минут).`);
     }, minutes * 60 * 1000);
-  }, [storage.session, storage.settings.sessionTimeoutMinutes]);
+  }, [currentUser, data.settings.sessionTimeoutMinutes, data.logout]);
 
   useEffect(() => {
-    if (!storage.session) return;
+    if (!currentUser) return;
     const events = ['mousedown', 'keydown', 'mousemove', 'touchstart', 'scroll'];
     const handler = () => resetIdleTimer();
     events.forEach((e) => window.addEventListener(e, handler, { passive: true }));
@@ -2529,156 +2345,184 @@ export default function App() {
       events.forEach((e) => window.removeEventListener(e, handler));
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
     };
-  }, [storage.session, resetIdleTimer]);
+  }, [currentUser, resetIdleTimer]);
 
-  // ===== Auth actions =====
-  const login = async (username, password) => {
-    const u = storage.users.find((x) => x.username.toLowerCase() === username.toLowerCase().trim());
-    if (!u) return { ok: false, error: 'Неверный логин или пароль' };
-    if (!u.isActive) return { ok: false, error: 'Учётная запись отключена. Обратитесь к администратору.' };
-    const hash = await hashPassword(password, u.passwordSalt);
-    if (hash !== u.passwordHash) return { ok: false, error: 'Неверный логин или пароль' };
-    await storage.persistUsers(storage.users.map((x) => x.id === u.id ? { ...x, lastLoginAt: new Date().toISOString() } : x));
-    await storage.persistSession({ userId: u.id, loggedInAt: new Date().toISOString() });
-    return { ok: true };
+  const auth = { currentUser, currentRole, can, login: data.login, logout: data.logout, changeOwnPassword: data.changeOwnPassword };
+
+  // ===== Helpers =====
+  const safeAlert = (e) => { alert(e?.message || 'Ошибка операции'); };
+
+  // ===== Incidents =====
+  const createIncident = async (payload) => {
+    try {
+      const { item } = await api.incidents.create(payload);
+      data.setIncidents((prev) => [item, ...prev]);
+    } catch (e) { safeAlert(e); }
   };
-
-  const logout = async () => { await storage.persistSession(null); };
-
-  const changeOwnPassword = async (oldPassword, newPassword) => {
-    if (!currentUser) return { ok: false, error: 'Нет активной сессии' };
-    const oldHash = await hashPassword(oldPassword, currentUser.passwordSalt);
-    if (oldHash !== currentUser.passwordHash) return { ok: false, error: 'Неверный текущий пароль' };
-    const newSalt = generateSalt();
-    const newHash = await hashPassword(newPassword, newSalt);
-    await storage.persistUsers(storage.users.map((x) => x.id === currentUser.id
-      ? { ...x, passwordHash: newHash, passwordSalt: newSalt, mustChangePassword: false }
-      : x));
-    return { ok: true };
-  };
-
-  const auth = { currentUser, currentRole, can, login, logout, changeOwnPassword };
-
-  // ===== Data CRUD =====
-  const createIncident = async (data) => {
-    const { id, n } = storage.nextIncidentId();
-    await storage.persistIncidents([...storage.incidents, { ...data, id, createdAt: new Date().toISOString() }]);
-    await storage.persistCounters({ ...storage.counters, incident: n });
-  };
-  const updateIncident = async (id, data) => {
-    await storage.persistIncidents(storage.incidents.map((i) => i.id === id ? { ...i, ...data, id } : i));
+  const updateIncident = async (id, patch) => {
+    try {
+      const { item } = await api.incidents.update(id, patch);
+      data.setIncidents((prev) => prev.map((i) => i.id === id ? item : i));
+    } catch (e) { safeAlert(e); }
   };
   const deleteIncident = async (id) => {
-    await storage.persistIncidents(storage.incidents.filter((i) => i.id !== id));
-    await storage.persistRisks(storage.risks.map((r) => ({
-      ...r, linkedIncidents: (r.linkedIncidents || []).filter((x) => x !== id)
-    })));
-  };
-  const createRisk = async (data) => {
-    const { id, n } = storage.nextRiskId();
-    await storage.persistRisks([...storage.risks, { ...data, id, createdAt: new Date().toISOString() }]);
-    await storage.persistCounters({ ...storage.counters, risk: n });
-  };
-  const updateRisk = async (id, data) => {
-    await storage.persistRisks(storage.risks.map((r) => r.id === id ? { ...r, ...data, id } : r));
-  };
-  const deleteRisk = async (id) => {
-    await storage.persistRisks(storage.risks.filter((r) => r.id !== id));
-  };
-  const loadDemo = async () => {
-    const { incidents, risks, counters } = generateDemoData();
-    await storage.persistIncidents(incidents);
-    await storage.persistRisks(risks);
-    await storage.persistCounters(counters);
-  };
-  const clearAll = async () => {
-    if (!confirm('Удалить все инциденты и риски?')) return;
-    await storage.persistIncidents([]);
-    await storage.persistRisks([]);
-    await storage.persistCounters({ incident: 0, risk: 0 });
+    try {
+      await api.incidents.delete(id);
+      // Сервер сам вычищает обратные ссылки, обновляем локально для UX
+      data.setIncidents((prev) => prev
+        .filter((i) => i.id !== id)
+        .map((i) => (i.linkedIncidents || []).includes(id)
+          ? { ...i, linkedIncidents: i.linkedIncidents.filter((x) => x !== id) } : i));
+      data.setRisks((prev) => prev.map((r) => (r.linkedIncidents || []).includes(id)
+        ? { ...r, linkedIncidents: r.linkedIncidents.filter((x) => x !== id) } : r));
+    } catch (e) { safeAlert(e); }
   };
 
-  // ===== User CRUD =====
-  const createUser = async (data) => {
-    if (storage.users.some((u) => u.username.toLowerCase() === data.username.toLowerCase())) {
-      throw new Error('Пользователь с таким логином уже существует');
-    }
-    const tempPassword = generateTempPassword();
-    const salt = generateSalt();
-    const hash = await hashPassword(tempPassword, salt);
-    const newUser = {
-      id: newId(),
-      username: data.username,
-      fullName: data.fullName,
-      email: data.email || '',
-      passwordHash: hash,
-      passwordSalt: salt,
-      roleId: data.roleId,
-      isTechnical: data.isTechnical && currentUser?.isTechnical,
-      isActive: data.isActive !== false,
-      mustChangePassword: true,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: null
-    };
-    await storage.persistUsers([...storage.users, newUser]);
-    return { user: newUser, tempPassword };
+  // ===== Risks =====
+  const createRisk = async (payload) => {
+    try {
+      const { item } = await api.risks.create(payload);
+      data.setRisks((prev) => [item, ...prev]);
+    } catch (e) { safeAlert(e); }
   };
-  const updateUser = async (id, data) => {
-    if (storage.users.some((u) => u.id !== id && u.username.toLowerCase() === data.username.toLowerCase())) {
-      alert('Пользователь с таким логином уже существует'); return;
-    }
-    await storage.persistUsers(storage.users.map((u) => u.id === id ? { ...u,
-      username: data.username, fullName: data.fullName, email: data.email || '',
-      roleId: data.roleId, isActive: data.isActive } : u));
+  const updateRisk = async (id, patch) => {
+    try {
+      const { item } = await api.risks.update(id, patch);
+      data.setRisks((prev) => prev.map((r) => r.id === id ? item : r));
+    } catch (e) { safeAlert(e); }
+  };
+  const deleteRisk = async (id) => {
+    try {
+      await api.risks.delete(id);
+      data.setRisks((prev) => prev.filter((r) => r.id !== id));
+    } catch (e) { safeAlert(e); }
+  };
+
+  const loadDemo = async () => {
+    alert('Демо-данные доступны только для карты рисков (см. вкладку «Карта рисков ИТ/ИБ» → «Демо»). Инциденты и риски создаются вручную или через импорт.');
+  };
+  const clearAll = async () => {
+    if (!confirm('Удалить все инциденты и риски? Это действие необратимо.')) return;
+    try {
+      for (const i of data.incidents) { try { await api.incidents.delete(i.id); } catch { /* ignore */ } }
+      for (const r of data.risks)     { try { await api.risks.delete(r.id); }     catch { /* ignore */ } }
+      data.setIncidents([]); data.setRisks([]);
+    } catch (e) { safeAlert(e); }
+  };
+
+  // ===== Risk Map =====
+  const createRiskmap = async (payload) => {
+    try {
+      const { item } = await api.riskmap.create(payload);
+      data.setRiskmap((prev) => [item, ...prev]);
+    } catch (e) { safeAlert(e); }
+  };
+  const updateRiskmap = async (id, patch) => {
+    try {
+      const { item } = await api.riskmap.update(id, patch);
+      data.setRiskmap((prev) => prev.map((r) => r.id === id ? item : r));
+    } catch (e) { safeAlert(e); }
+  };
+  const deleteRiskmap = async (id) => {
+    try {
+      await api.riskmap.delete(id);
+      data.setRiskmap((prev) => prev.filter((r) => r.id !== id));
+    } catch (e) { safeAlert(e); }
+  };
+  const loadRiskmapSeed = async () => {
+    if (data.riskmap.length && !confirm('Заменить текущие записи карты рисков демо-данными?')) return;
+    try {
+      await api.riskmap.import(SEED_RISKMAP, true);
+      const { items } = await api.riskmap.list();
+      data.setRiskmap(items);
+    } catch (e) { safeAlert(e); }
+  };
+  const clearRiskmap = async () => {
+    if (!confirm('Удалить все записи карты рисков?')) return;
+    try {
+      for (const r of data.riskmap) { try { await api.riskmap.delete(r.id); } catch { /* ignore */ } }
+      data.setRiskmap([]);
+    } catch (e) { safeAlert(e); }
+  };
+  const importRiskmap = async (records, replace) => {
+    try {
+      await api.riskmap.import(records, !!replace);
+      const { items } = await api.riskmap.list();
+      data.setRiskmap(items);
+    } catch (e) { safeAlert(e); }
+  };
+  const exportRiskmap = () => {
+    if (!data.riskmap.length) { alert('Нет записей для экспорта'); return; }
+    exportRiskMapToXlsx(data.riskmap);
+  };
+
+  // ===== Users =====
+  const createUser = async (payload) => {
+    const result = await api.users.create(payload); // { user, tempPassword }
+    data.setUsers((prev) => [...prev, result.user]);
+    return result;
+  };
+  const updateUser = async (id, patch) => {
+    try {
+      const { user } = await api.users.update(id, patch);
+      data.setUsers((prev) => prev.map((u) => u.id === id ? user : u));
+    } catch (e) { safeAlert(e); }
   };
   const deleteUser = async (id) => {
     if (id === currentUser?.id) { alert('Нельзя удалить себя'); return; }
-    const target = storage.users.find((u) => u.id === id);
-    if (target?.isTechnical && !currentUser?.isTechnical) { alert('Только техническая УЗ может удалять технические УЗ'); return; }
-    await storage.persistUsers(storage.users.filter((u) => u.id !== id));
+    try {
+      await api.users.delete(id);
+      data.setUsers((prev) => prev.filter((u) => u.id !== id));
+    } catch (e) { safeAlert(e); }
   };
   const resetUserPassword = async (id) => {
-    const tempPassword = generateTempPassword();
-    const salt = generateSalt();
-    const hash = await hashPassword(tempPassword, salt);
-    await storage.persistUsers(storage.users.map((u) => u.id === id
-      ? { ...u, passwordHash: hash, passwordSalt: salt, mustChangePassword: true } : u));
+    const { tempPassword } = await api.users.resetPassword(id);
     return tempPassword;
   };
 
-  // ===== Role CRUD =====
-  const createRole = async (data) => {
-    await storage.persistRoles([...storage.roles, { ...data, id: `role-${newId()}`, isSystem: false }]);
+  // ===== Roles =====
+  const createRole = async (payload) => {
+    try {
+      const { item } = await api.roles.create(payload);
+      data.setRoles((prev) => [...prev, item]);
+    } catch (e) { safeAlert(e); }
   };
-  const updateRole = async (id, data) => {
-    const existing = storage.roles.find((r) => r.id === id);
-    if (existing?.isSystem) { alert('Системную роль изменять нельзя'); return; }
-    await storage.persistRoles(storage.roles.map((r) => r.id === id ? { ...r, ...data, id, isSystem: false } : r));
+  const updateRole = async (id, patch) => {
+    try {
+      const { item } = await api.roles.update(id, patch);
+      data.setRoles((prev) => prev.map((r) => r.id === id ? item : r));
+    } catch (e) { safeAlert(e); }
   };
   const deleteRole = async (id) => {
-    const existing = storage.roles.find((r) => r.id === id);
-    if (existing?.isSystem) { alert('Системную роль удалить нельзя'); return; }
-    await storage.persistRoles(storage.roles.filter((r) => r.id !== id));
+    try {
+      await api.roles.delete(id);
+      data.setRoles((prev) => prev.filter((r) => r.id !== id));
+    } catch (e) { safeAlert(e); }
   };
 
-  // ===== Settings save (with cascading rename) =====
+  // ===== Settings =====
   const saveSettings = async (newSettings, { typeRenames, sevRenames, catRenames }) => {
     const hasRenames = Object.keys(typeRenames).length || Object.keys(sevRenames).length || Object.keys(catRenames).length;
-    if (hasRenames) {
-      const updatedIncidents = storage.incidents.map((i) => {
-        let next = i;
-        if (typeRenames[next.type])     next = { ...next, type: typeRenames[next.type] };
-        if (sevRenames[next.severity])  next = { ...next, severity: sevRenames[next.severity] };
-        if (catRenames[next.category])  next = { ...next, category: catRenames[next.category] };
-        return next;
-      });
-      await storage.persistIncidents(updatedIncidents);
-    }
-    await storage.persistSettings(newSettings);
+    try {
+      if (hasRenames) {
+        // Каскадное переименование в существующих инцидентах
+        for (const i of data.incidents) {
+          let patch = null;
+          if (typeRenames[i.type])     patch = { ...(patch || {}), type: typeRenames[i.type] };
+          if (sevRenames[i.severity])  patch = { ...(patch || {}), severity: sevRenames[i.severity] };
+          if (catRenames[i.category])  patch = { ...(patch || {}), category: catRenames[i.category] };
+          if (patch) await api.incidents.update(i.id, patch);
+        }
+        const { items } = await api.incidents.list();
+        data.setIncidents(items);
+      }
+      const { settings } = await api.settings.save(newSettings);
+      data.setSettings(settings);
+    } catch (e) { safeAlert(e); }
   };
 
   // ===== RENDER =====
-  if (!storage.loaded) {
+  if (!data.loaded) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
         <div className="text-zinc-500 text-sm font-mono">Загрузка...</div>
@@ -2686,7 +2530,6 @@ export default function App() {
     );
   }
 
-  // Not logged in → login screen
   if (!currentUser) {
     return (
       <>
@@ -2695,12 +2538,11 @@ export default function App() {
           body { font-family: 'Manrope', system-ui, sans-serif; }
           .font-mono, [class*="font-mono"] { font-family: 'JetBrains Mono', ui-monospace, monospace !important; }
         `}</style>
-        <LoginPage onLogin={login} bootstrapCreds={storage.bootstrapCreds} onDismissBootstrap={storage.clearBootstrapCreds} />
+        <LoginPage onLogin={data.login} bootstrapCreds={null} onDismissBootstrap={() => {}} />
       </>
     );
   }
 
-  // Logged in but must change password → forced change screen
   if (currentUser.mustChangePassword) {
     return (
       <AuthContext.Provider value={auth}>
@@ -2709,14 +2551,13 @@ export default function App() {
           body { font-family: 'Manrope', system-ui, sans-serif; }
           .font-mono, [class*="font-mono"] { font-family: 'JetBrains Mono', ui-monospace, monospace !important; }
         `}</style>
-        <ForcePasswordChangePage user={currentUser} onSubmit={changeOwnPassword} onCancel={logout} />
+        <ForcePasswordChangePage user={currentUser} onSubmit={data.changeOwnPassword} onCancel={data.logout} />
       </AuthContext.Provider>
     );
   }
 
-  // Make sure tab is accessible by current role; if not, fall back to dashboard.
   const tabPermMap = {
-    incidents: 'incidents.view', risks: 'risks.view',
+    incidents: 'incidents.view', risks: 'risks.view', riskmap: 'riskmap.view',
     users: 'users.view', roles: 'roles.view', settings: 'settings.view'
   };
   const currentTabPerm = tabPermMap[tab];
@@ -2724,7 +2565,7 @@ export default function App() {
 
   return (
     <AuthContext.Provider value={auth}>
-      <SettingsContext.Provider value={storage.settings}>
+      <SettingsContext.Provider value={data.settings}>
         <div className="min-h-screen bg-zinc-950 text-zinc-100" style={{
           backgroundImage: 'radial-gradient(circle at 20% 0%, rgba(251, 191, 36, 0.04), transparent 50%), radial-gradient(circle at 80% 100%, rgba(56, 189, 248, 0.03), transparent 50%)',
           fontFamily: '"Manrope", system-ui, -apple-system, sans-serif'
@@ -2744,43 +2585,51 @@ export default function App() {
 
           <main className="max-w-[1600px] mx-auto px-6 py-6">
             {visibleTab === 'dashboard' && (
-              <Dashboard incidents={storage.incidents} risks={storage.risks}
-                hasStorage={storage.hasStorage} loadDemo={loadDemo} clearAll={clearAll}
-                onCellClick={(items) => setMatrixModal(items)} />
+              <Dashboard incidents={data.incidents} risks={data.risks} riskmap={data.riskmap}
+                hasStorage={true} loadDemo={loadDemo} clearAll={clearAll}
+                onCellClick={(items) => setMatrixModal(items)}
+                onRiskmapCellClick={(items) => setMatrixModal({ riskmap: items })} />
             )}
             {visibleTab === 'incidents' && can('incidents.view') && (
-              <IncidentsPage incidents={storage.incidents} risks={storage.risks}
+              <IncidentsPage incidents={data.incidents} risks={data.risks}
                 onCreate={createIncident} onUpdate={updateIncident} onDelete={deleteIncident} />
             )}
             {visibleTab === 'risks' && can('risks.view') && (
-              <RisksPage risks={storage.risks} incidents={storage.incidents}
+              <RisksPage risks={data.risks} incidents={data.incidents}
                 onCreate={createRisk} onUpdate={updateRisk} onDelete={deleteRisk} />
             )}
+            {visibleTab === 'riskmap' && can('riskmap.view') && (
+              <RiskMapPage records={data.riskmap}
+                onCreate={createRiskmap} onUpdate={updateRiskmap} onDelete={deleteRiskmap}
+                onLoadSeed={loadRiskmapSeed} onClearAll={clearRiskmap}
+                onImport={importRiskmap} onExport={exportRiskmap} />
+            )}
             {visibleTab === 'users' && can('users.view') && (
-              <UsersPage users={storage.users} roles={storage.roles}
+              <UsersPage users={data.users} roles={data.roles}
                 onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}
                 onResetPassword={resetUserPassword} />
             )}
             {visibleTab === 'roles' && can('roles.view') && (
-              <RolesPage roles={storage.roles} users={storage.users}
+              <RolesPage roles={data.roles} users={data.users}
                 onCreate={createRole} onUpdate={updateRole} onDelete={deleteRole} />
             )}
             {visibleTab === 'settings' && can('settings.view') && (
-              <SettingsPage settings={storage.settings} incidents={storage.incidents} onSave={saveSettings} />
+              <SettingsPage settings={data.settings} incidents={data.incidents} onSave={saveSettings} />
             )}
           </main>
 
           <Modal open={!!matrixModal} onClose={() => setMatrixModal(null)} title="Риски в выбранной ячейке">
             {matrixModal && (
               <div className="space-y-2">
-                {matrixModal.map((r) => {
-                  const score = r.probability * r.influence;
+                {(matrixModal.riskmap || matrixModal).map((r) => {
+                  const isMap = !!matrixModal.riskmap;
+                  const score = isMap ? residualScore(r) : r.probability * r.influence;
                   const zone = riskZone(score);
                   return (
                     <div key={r.id} className="flex items-center gap-3 p-3 bg-zinc-950/60 border border-zinc-800 rounded">
                       <span className="font-mono text-xs text-amber-400">{r.id}</span>
                       <span className={`inline-block px-1.5 py-0.5 text-[10px] font-mono font-bold rounded text-zinc-950 ${zone.class}`}>{score}</span>
-                      <span className="flex-1 text-sm text-zinc-200">{r.riskEvent}</span>
+                      <span className="flex-1 text-sm text-zinc-200">{isMap ? (r.threat || r.description) : r.riskEvent}</span>
                     </div>
                   );
                 })}
@@ -2791,7 +2640,7 @@ export default function App() {
           <footer className="max-w-[1600px] mx-auto px-6 py-6 mt-8 border-t border-zinc-800/60">
             <div className="flex items-center justify-between text-[11px] text-zinc-600 font-mono">
               <span>RISK CONSOLE · {new Date().getFullYear()}</span>
-              <span>{storage.incidents.length} INC · {storage.risks.length} RSK · {storage.users.length} USR · {storage.hasStorage ? 'STORAGE OK' : 'IN-MEMORY ONLY'}</span>
+              <span>{data.incidents.length} INC · {data.risks.length} RSK · {data.riskmap.length} RM · {data.users.length} USR · API CONNECTED</span>
             </div>
           </footer>
         </div>

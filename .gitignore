@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Build output
+dist/
+build/
+
+# Development
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.env
+*.env.local
+
+# Cache
+.cache/
+.eslintcache
+.vite/
+**/.vite/
+
+# Конфиги с секретами — НЕ коммитить
+config/app.env
+
+# Релизы и бэкапы БД
+release-*.tar.gz
+backups/
+
+# Prisma локальная dev-БД
+apps/api/prisma/migrations/dev.db

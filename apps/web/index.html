@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Risk Platform</title>
+    <!-- Runtime-конфиг. Файл монтируется в nginx как bind-mount из config/frontend.js
+         и может правиться без пересборки фронта. -->
+    <script src="/config.js"></script>
+  </head>
+  <body class="bg-zinc-950 text-white">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

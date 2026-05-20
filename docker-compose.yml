@@ -1,0 +1,60 @@
+# Risk Platform — stack: nginx (web) + Fastify (api) + PostgreSQL (db)
+# Запуск: docker compose up -d
+# Обновление: docker load < release.tar.gz && docker compose up -d
+# Данные (БД) живут в named volume `db-data` и переживают пересборку образов.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: risk-platform-db
+    restart: unless-stopped
+    env_file: ./config/app.env
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-risk_platform} -d ${POSTGRES_DB:-risk_platform}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  api:
+    image: risk-platform/api:latest
+    build:
+      context: ./apps/api
+    container_name: risk-platform-api
+    restart: unless-stopped
+    env_file: ./config/app.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-risk_platform}:${POSTGRES_PASSWORD:-risk_platform}@db:5432/${POSTGRES_DB:-risk_platform}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+
+  web:
+    image: risk-platform/web:latest
+    build:
+      context: ./apps/web
+    container_name: risk-platform-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-80}:80"
+    volumes:
+      # Конфиг nginx — bind-mount хостового файла. Правка без пересборки.
+      - ./config/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Runtime-конфиг фронта (apiBaseUrl, orgName, и т.д.)
+      - ./config/frontend.js:/usr/share/nginx/html/config.js:ro
+    depends_on:
+      - api
+    networks: [internal]
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  db-data:
+    name: risk-platform-db-data

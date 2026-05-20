@@ -1,0 +1,29 @@
+{
+  "incidentTypes": [
+    { "id": "type-it", "name": "ИТ", "color": "sky" },
+    { "id": "type-is", "name": "ИБ", "color": "amber" }
+  ],
+  "incidentCategories": [
+    { "id": "cat-it-1", "typeId": "type-it", "name": "Сбой оборудования" },
+    { "id": "cat-it-2", "typeId": "type-it", "name": "Сбой ПО" },
+    { "id": "cat-it-3", "typeId": "type-it", "name": "Сбой сети" },
+    { "id": "cat-it-4", "typeId": "type-it", "name": "Потеря данных" },
+    { "id": "cat-it-5", "typeId": "type-it", "name": "Недоступность сервиса" },
+    { "id": "cat-it-6", "typeId": "type-it", "name": "Прочее" },
+    { "id": "cat-is-1", "typeId": "type-is", "name": "Несанкционированный доступ" },
+    { "id": "cat-is-2", "typeId": "type-is", "name": "Утечка данных" },
+    { "id": "cat-is-3", "typeId": "type-is", "name": "Вредоносное ПО" },
+    { "id": "cat-is-4", "typeId": "type-is", "name": "Фишинг" },
+    { "id": "cat-is-5", "typeId": "type-is", "name": "Социальная инженерия" },
+    { "id": "cat-is-6", "typeId": "type-is", "name": "DDoS-атака" },
+    { "id": "cat-is-7", "typeId": "type-is", "name": "Нарушение целостности" },
+    { "id": "cat-is-8", "typeId": "type-is", "name": "Прочее" }
+  ],
+  "severities": [
+    { "id": "sev-1", "name": "Низкая",      "color": "emerald" },
+    { "id": "sev-2", "name": "Средняя",     "color": "amber" },
+    { "id": "sev-3", "name": "Высокая",     "color": "orange" },
+    { "id": "sev-4", "name": "Критическая", "color": "rose" }
+  ],
+  "sessionTimeoutMinutes": 30
+}

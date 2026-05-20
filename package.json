@@ -1,0 +1,17 @@
+{
+  "name": "risk-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Risk Platform — monorepo (apps/api + apps/web)",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev:web": "npm --workspace @risk-platform/web run dev",
+    "dev:api": "npm --workspace @risk-platform/api run dev",
+    "build:web": "npm --workspace @risk-platform/web run build",
+    "build": "npm run build:web",
+    "docker:build": "docker compose --env-file config/app.env build",
+    "docker:up": "docker compose --env-file config/app.env up -d",
+    "docker:down": "docker compose --env-file config/app.env down",
+    "docker:logs": "docker compose --env-file config/app.env logs -f"
+  }
+}
